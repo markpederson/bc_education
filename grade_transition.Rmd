@@ -1,0 +1,218 @@
+---
+title: "BC Student Grade-to-Grade Transitions"
+output: html_notebook
+---
+
+```{r message=FALSE, warning=FALSE, include=FALSE}
+library(tidyverse)
+library(scales)
+```
+## Introduction
+
+It is critical for the effectivess of any educational program that its students 
+progress smoothly between grade levels. The BC Ministry of Education has released
+[data](https://catalogue.data.gov.bc.ca/dataset/bc-schools-grade-to-grade-transition) 
+on grade-to-grade transitions categorized by a number of discriminating features, of 
+which we will examine
+
+  1. `BASE_YEAR` / `SCHOOL_YEAR`: the transition reference year
+  2. `PUBLIC_OR_INDEPENDENT`: public school vs independent school identifiers
+  3. `DISTRICT_NUMBER` / `DISTRICT_ NAME`: school district identifier
+  4. `STUDENT_GRADE`: student's grade level in `BASE_YEAR`
+  5. `SUB_POPULATION`: various methods of breaking down student populations (indigenous/non-indigenous, male/female, etc.)
+  6. `DENOMINATOR_STUDIED_COHORT`: number of students in a particular cohort
+  7. `NUMERATOR_NUM_SUCCESSFUL`: number of students in a particular cohort who successfully transitioned between grades
+
+We first load the data for `BASE_YEAR` 2015 in order to perform preliminary analyses.
+
+```{r}
+df = read.csv('grade_transition.csv')
+df2 = df[df$BASE_YEAR=='2015/2016',]
+df3 = df2[(df2$DATA_LEVEL=='District Level' | 
+            df2$PUBLIC_OR_INDEPENDENT=='BC Independent School' & df2$DATA_LEVEL=='Province Level')
+          & (df2$SUB_POPULATION=='Indigenous' | df2$SUB_POPULATION=='Non Indigenous'),]
+
+gtdf = df3[, c('BASE_YEAR', 'PUBLIC_OR_INDEPENDENT', 'DISTRICT_NUMBER',
+                  'STUDENT_GRADE', 'SUB_POPULATION', 
+                  'DENOMINATOR_STUDIED_COHORT', 'NUMERATOR_NUM_SUCCESSFUL')]
+
+head(gtdf)
+```
+
+In order to fit models to the data, we process it into a more convenient format.
+
+```{r}
+gtdf$BASE_YEAR = as.numeric(substr(gtdf$BASE_YEAR, 1, 4))
+
+gtdf$PUBLIC_OR_INDEPENDENT = as.character(gtdf$PUBLIC_OR_INDEPENDENT)
+gtdf[gtdf$PUBLIC_OR_INDEPENDENT=='BC Independent School',]$PUBLIC_OR_INDEPENDENT = 0
+gtdf[gtdf$PUBLIC_OR_INDEPENDENT=='BC Public School',]$PUBLIC_OR_INDEPENDENT = 1
+gtdf$PUBLIC_OR_INDEPENDENT = as.factor(gtdf$PUBLIC_OR_INDEPENDENT)
+
+gtdf$SUB_POPULATION = as.character(gtdf$SUB_POPULATION)
+gtdf[gtdf$SUB_POPULATION=='Indigenous',]$SUB_POPULATION=1
+gtdf[gtdf$SUB_POPULATION=='Non Indigenous',]$SUB_POPULATION=0
+
+gtdf[is.na(gtdf$DISTRICT_NUMBER),]$DISTRICT_NUMBER=0
+gtdf$DISTRICT_NUMBER = as.factor(gtdf$DISTRICT_NUMBER)
+
+gtdf$DENOMINATOR_STUDIED_COHORT = as.character(gtdf$DENOMINATOR_STUDIED_COHORT)
+gtdf$NUMERATOR_NUM_SUCCESSFUL = as.character(gtdf$NUMERATOR_NUM_SUCCESSFUL)
+
+gtdf = gtdf[gtdf$DENOMINATOR_STUDIED_COHORT!='Msk' & gtdf$NUMERATOR_NUM_SUCCESSFUL!='Msk',]
+
+gtdf$DENOMINATOR_STUDIED_COHORT = as.numeric(gtdf$DENOMINATOR_STUDIED_COHORT)
+gtdf$NUMERATOR_NUM_SUCCESSFUL = as.numeric(gtdf$NUMERATOR_NUM_SUCCESSFUL)
+
+colnames(gtdf) = c('base_year', 'is_public', 'district_number', 'student_grade',
+                   'is_indigenous', 'total', 'successful')
+rownames(gtdf) = 1:length(gtdf$base_year)
+
+gtdf$is_public = as.numeric(gtdf$is_public)
+gtdf$is_indigenous = as.numeric(gtdf$is_indigenous)
+gtdf$success_rate = gtdf$successful / gtdf$total
+head(gtdf)
+```
+
+## Preliminary Analysis
+In the exploratory stage, will use visualizations to identify patterns in the data
+that may be quantifiable with statistical models. 
+
+### Transition Rates for Indigenous and Non-Indigenous Students
+```{r}
+agg_df = gtdf %>% group_by(is_indigenous) %>% 
+  summarise(total=sum(total), successful=sum(successful))
+agg_df$success_rate = agg_df$successful / agg_df$total
+agg_df$is_indigenous = as.character(agg_df$is_indigenous)
+agg_df[agg_df$is_indigenous==1,]$is_indigenous = 'Indigenous'
+agg_df[agg_df$is_indigenous==0,]$is_indigenous = 'Non-Indigenous'
+
+ggplot(aes(is_indigenous, success_rate), data=agg_df) + 
+  geom_bar(stat='identity', fill='indianred3') +
+  geom_text(aes(label=paste(as.character(round(success_rate*100, 1)), '%')), vjust=-0.5) +
+  scale_y_continuous(limits=c(0.95, 1), 
+                     oob=rescale_none, 
+                     labels=scales::percent) +
+  xlab('') + ylab('Transition Rate') +
+  ggtitle('Transition Rates for Indigenous and Non-Indigenous Students')
+```
+
+It is clear that indigenous student face a considerably lower overall transition 
+rate than non-indigenous students - this will need to be explored further.
+
+```{r message=FALSE, warning=FALSE}
+agg_df = gtdf %>% group_by(is_indigenous, student_grade) %>% 
+  summarise(total=sum(total), successful=sum(successful))
+agg_df$success_rate = agg_df$successful / agg_df$total
+agg_df$is_indigenous = as.character(agg_df$is_indigenous)
+agg_df[agg_df$is_indigenous==1,]$is_indigenous = 'Indigenous'
+agg_df[agg_df$is_indigenous==0,]$is_indigenous = 'Non-Indigenous'
+
+agg_df = rename(agg_df, 'Sub-Population'=is_indigenous)
+
+ggplot(aes(student_grade, success_rate), data=agg_df) + 
+  geom_line(aes(color=`Sub-Population`)) + 
+  geom_point(aes(color=`Sub-Population`)) +
+  geom_text(aes(label=paste(as.character(round(success_rate*100, 0)), '%'), color=`Sub-Population`), vjust=-0.5) +
+  scale_y_continuous(labels=scales::percent) +
+  xlab('Grade Level (Base)') + ylab('Transition Rate') +
+  ggtitle('Transition Rates by Grade for Indigenous and Non-Indigenous Students')
+```
+While the discrepancy between the groups exists to some extent at all grade levels, 
+it is most dramatic in the final 3 years, likely suggesting that many of these 
+non-transitioning students are, in fact, dropping out of school. This is a hypothesis
+that ought to be explored in its on right.
+
+### Transition Rates by School Type
+```{r}
+agg_df = gtdf %>% group_by(is_public) %>% 
+  summarise(total=sum(total), successful=sum(successful))
+agg_df$success_rate = agg_df$successful / agg_df$total
+agg_df$is_public = as.character(agg_df$is_public)
+
+agg_df[agg_df$is_public==2,]$is_public = 'Public'
+agg_df[agg_df$is_public==1,]$is_public = 'Independent'
+
+ggplot(aes(is_public, success_rate), data=agg_df) + 
+  geom_bar(stat='identity', fill='indianred3') + 
+  geom_text(aes(label=paste(as.character(round(success_rate*100, 1)), '%')), vjust=-0.5) +
+  scale_y_continuous(limits=c(0.95, 1), 
+                     oob=rescale_none, 
+                     labels=scales::percent) +
+  xlab('') + ylab('Transition Rate') +
+  ggtitle('Transition Rates by School Type')
+```
+The overall difference between public and independent schools appears to be minimal.
+```{r message=FALSE, warning=FALSE}
+agg_df = gtdf %>% group_by(is_public, student_grade) %>% 
+  summarise(total=sum(total), successful=sum(successful))
+agg_df$success_rate = agg_df$successful / agg_df$total
+agg_df$is_public = as.character(agg_df$is_public)
+agg_df[agg_df$is_public==2,]$is_public = 'Public'
+agg_df[agg_df$is_public==1,]$is_public = 'Independent'
+
+agg_df = rename(agg_df, 'School Type'=is_public)
+
+ggplot(aes(student_grade, success_rate), data=agg_df) + 
+  geom_line(aes(color=`School Type`)) + 
+  geom_point(aes(color=`School Type`)) +
+  geom_text(aes(label=paste(as.character(round(success_rate*100, 0)), '%'), color=`School Type`), vjust=-0.5) +
+  scale_y_continuous(labels=scales::percent) +
+  xlab('Grade Level (Base)') + ylab('Transition Rate') +
+  ggtitle('Transition Rates by Grade by School Type')
+```
+Again, we observe a drop in the final year, although not nearly as dramatic as
+with indigenous students (92% overall public school vs 82% overall indigenous). 
+It is possible that students in independent schools are more likely to see 12th 
+grade as a necessary prerequisite for attending university, while students in 
+public schools are more likely to forgo their final year of school in order to
+join the workforce - this remains to be further investigated.
+
+## Statistical Analysis
+### Baseline Logistic Regression
+We will establish a baseline for statistical analysis with a logistic regression
+on `is_public` (binary), `is_indigenous` (binary) and `student_grade` (treated
+as an ordinal discrete predictor)
+
+```{r}
+mod1 = glm(cbind(successful, total-successful) ~ is_public + student_grade + is_indigenous, 
+           family='binomial',
+           data=gtdf)
+
+summary(mod1)
+```
+
+All parameters are statistically significant at the 95% confidence level. We interpret
+the fitted coefficients in terms of their multiplicative effects on the 
+odds $\frac{p}{1-p}$ of transitioning between grades.
+```{r}
+exp(mod1$coefficients)-1
+```
+  1. Attending public school increases the odds of transitioning by 6%
+  2. Each increase in grade level decreases the odds of transitioning by 14%
+  3. Being indigenous decreases the odds of transitioning by 50%
+  
+Because the tail probability for `is_public` is relatively large compared to 
+`student_grade` and `is_indigenous` (and drawing on our previous intuition), we 
+will attempt to remove that parameter from the model.
+
+```{r}
+mod2 = glm(cbind(successful, total-successful) ~ student_grade + is_indigenous, 
+           family='binomial',
+           data=gtdf)
+summary(mod2)
+```
+The simplified model $\mathcal{M}_2$is nested within the previous model $\mathcal{M}_1$
+, and it therefore has a `\chi^2_1` distribution under the null hypothesis that 
+$\mathcal{M}_2$ is not an adequate simplification of $\mathcal{M}_1$
+
+```{r}
+pchisq(mod2$deviance - mod1$deviance,
+       mod2$df.residual - mod1$df.residual,
+       lower.tail=FALSE)
+```
+Thus, we would reject the inadequacy of the simplification at the 95% confidence
+level, but fail to reject at 99%. As we are considering baselines, we shall merely
+make note of that at this stage.
+
+### Variable Interactions
